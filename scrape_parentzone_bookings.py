@@ -1,12 +1,11 @@
 """
 ParentZone Calendar Scraper for Windows
-Generates an iCal (.ics) file that can be imported into Google Calendar
+Generates separate iCal (.ics) files per month for import into Google Calendar
 
 Requirements:
 - Python 3.7+
 - Chrome browser installed
 - selenium package
-- chromedriver matching your Chrome version
 
 Install dependencies:
     pip install selenium
@@ -18,32 +17,41 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import re
 import os
 
 # ============= CONFIGURATION =============
-PARENTZONE_USERNAME = "INPUT EMAIL HERE"  # CHANGE THIS
-PARENTZONE_PASSWORD = "INPUT PASSWORD HERE"           # CHANGE THIS
+PARENTZONE_USERNAME = "your_email@example.com"  # CHANGE THIS
+PARENTZONE_PASSWORD = "your_password"           # CHANGE THIS
 MONTHS_TO_SCRAPE = 3                            # How many months ahead to scrape
-OUTPUT_FILE = "parentzone_bookings.ics"         # Output filename
+
+# ============= APPOINTMENT CUSTOMIZATION =============
+# Choose how appointments appear in your calendar:
+
+# Option 1: Use actual booking times (DEFAULT)
+# Events will show the full duration (e.g., 09:00-17:00)
+USE_ACTUAL_TIMES = True
+
+# Option 2: Create reminder appointments at a specific time
+# Set USE_ACTUAL_TIMES = False and configure below:
+REMINDER_TIME = "07:00"           # Time for reminder (24-hour format, e.g., "07:00", "18:30")
+REMINDER_DURATION_MINUTES = 30    # How long the reminder lasts (e.g., 30 = 30 minute appointment)
+
+# Summary format options:
+# True = Include time in summary (e.g., "Felicity 9am-5pm")
+# False = Name only (e.g., "Felicity Nursery")
+INCLUDE_TIME_IN_SUMMARY = True
+# ====================================================
 
 # URLs
 PARENTZONE_LOGIN_URL = "https://www.parentzone.me/login"
 PARENTZONE_BOOKINGS_URL = "https://www.parentzone.me/bookings"
 
-# Month mapping
-MONTH_MAP = {
-    'January': '01', 'February': '02', 'March': '03', 'April': '04',
-    'May': '05', 'June': '06', 'July': '07', 'August': '08',
-    'September': '09', 'October': '10', 'November': '11', 'December': '12'
-}
-# =========================================
-
 
 def setup_driver():
-    """Configure Chrome driver with options for visibility (so you can see what's happening)"""
+    """Configure Chrome driver with options for visibility"""
     chrome_options = Options()
     
     # Comment out the headless line if you want to SEE the browser working
@@ -54,8 +62,6 @@ def setup_driver():
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
-    # Chrome will automatically find chromedriver if it's in PATH
-    # If not, you'll need to specify the path to chromedriver.exe
     driver = webdriver.Chrome(options=chrome_options)
     return driver
 
@@ -65,43 +71,35 @@ def login_to_parentzone(driver, username, password):
     print("🔐 Logging into ParentZone...")
     driver.get(PARENTZONE_LOGIN_URL)
     
-    # Wait for login form to load
     wait = WebDriverWait(driver, 15)
     
     try:
-        # Find email field (may need adjustment based on actual HTML)
         email_field = wait.until(EC.presence_of_element_located((By.NAME, "email")))
         email_field.clear()
         email_field.send_keys(username)
         
-        # Find password field
         password_field = driver.find_element(By.NAME, "password")
         password_field.clear()
         password_field.send_keys(password)
         
-        # Find and click login button
         login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
         login_button.click()
         
-        # Wait for navigation (adjust time if needed)
         time.sleep(5)
         print("✅ Login successful!")
         return True
         
     except Exception as e:
         print(f"❌ Login failed: {e}")
-        print("💡 Tip: Check if email/password field names have changed")
         return False
 
 
 def extract_bookings_from_page(driver):
-    """Extract bookings from the current calendar view using the actual ParentZone structure"""
+    """Extract bookings from the current calendar view"""
     
-    # Wait for calendar to fully load
     wait = WebDriverWait(driver, 15)
     
     try:
-        # Wait for the title with month/year
         wait.until(EC.presence_of_element_located(
             (By.CSS_SELECTOR, "h6.MuiTypography-root.MuiTypography-h6.MuiTypography-noWrap.css-1dw86cl-titleWithButtons")
         ))
@@ -112,25 +110,21 @@ def extract_bookings_from_page(driver):
     bookings = []
     
     try:
-        # Get current month/year from page header (e.g., "Bookings - Jan 2025")
         month_year_element = driver.find_element(
             By.CSS_SELECTOR, 
             "h6.MuiTypography-root.MuiTypography-h6.MuiTypography-noWrap.css-1dw86cl-titleWithButtons"
         )
         full_text = month_year_element.text.strip()
-        # Remove "Bookings - " prefix
         month_year_str = full_text.replace('Bookings - ', '').strip()
         
-        # Parse "Jan 2025" format
         parts = month_year_str.split(' ')
         if len(parts) != 2:
             print(f"⚠️ Could not parse month/year: {month_year_str}")
             return bookings
         
-        month_abbrev = parts[0]  # e.g., "Jan"
-        year_str = parts[1]       # e.g., "2025"
+        month_abbrev = parts[0]
+        year_str = parts[1]
         
-        # Map month abbreviations to numbers
         month_map = {
             'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
             'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
@@ -145,7 +139,6 @@ def extract_bookings_from_page(driver):
         
         print(f"📅 Processing {month_abbrev} {current_year}...")
         
-        # Get all day containers using the actual ParentZone CSS classes
         day_elements = driver.find_elements(
             By.CSS_SELECTOR, 
             "div.css-1btmizi-day.css-1eqmmqv-dayDesktop.css-1ke78x2-dayBorder"
@@ -155,7 +148,6 @@ def extract_bookings_from_page(driver):
         
         for day_el in day_elements:
             try:
-                # Get the date from the day element (e.g., "1 Jan" or just "1")
                 date_element = day_el.find_element(
                     By.CSS_SELECTOR,
                     "p.MuiTypography-root.MuiTypography-body2.css-68o8xu"
@@ -165,11 +157,9 @@ def extract_bookings_from_page(driver):
                 if not date_text:
                     continue
                 
-                # Parse the date - could be "1 Jan" or just "1"
                 date_parts = date_text.split(' ')
                 day_number = int(date_parts[0])
                 
-                # Handle month overlap (e.g., "31 Dec" showing in Jan view)
                 day_month = current_month
                 day_year = current_year
                 
@@ -177,13 +167,11 @@ def extract_bookings_from_page(driver):
                     day_month_abbrev = date_parts[1]
                     day_month = month_map.get(day_month_abbrev, current_month)
                     
-                    # Handle year boundaries
                     if day_month_abbrev == 'Dec' and month_abbrev == 'Jan':
                         day_year = current_year - 1
                     elif day_month_abbrev == 'Jan' and month_abbrev == 'Dec':
                         day_year = current_year + 1
                 
-                # Find all booking containers for this day
                 booking_containers = day_el.find_elements(
                     By.CSS_SELECTOR,
                     "div.css-jvibwz-buttonContainer"
@@ -192,16 +180,16 @@ def extract_bookings_from_page(driver):
                 if booking_containers:
                     print(f"  Day {date_text}: Found {len(booking_containers)} booking(s)")
                 
+                day_bookings = []
+                
                 for container in booking_containers:
                     try:
-                        # Extract child name
                         child_name_el = container.find_element(
                             By.CSS_SELECTOR,
                             "span.css-cypr81-childName"
                         )
                         child_name = child_name_el.text.strip() if child_name_el else "Felicity Nursery"
                         
-                        # Extract session time (e.g., "09:00 - 17:00")
                         session_time_el = container.find_element(
                             By.CSS_SELECTOR,
                             "span.css-11fzqss-sessionTime"
@@ -211,7 +199,6 @@ def extract_bookings_from_page(driver):
                         if not session_time:
                             continue
                         
-                        # Parse time range
                         time_match = re.search(r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})', session_time)
                         if not time_match:
                             print(f"    ⚠️ Could not parse time: {session_time}")
@@ -220,26 +207,88 @@ def extract_bookings_from_page(driver):
                         start_time = time_match.group(1)
                         end_time = time_match.group(2)
                         
-                        # Build datetime objects
                         date_str = f"{day_year}-{day_month:02d}-{day_number:02d}"
                         start_datetime = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M")
                         end_datetime = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M")
                         
-                        bookings.append({
-                            'summary': child_name,
+                        day_bookings.append({
+                            'child_name': child_name,
                             'start': start_datetime,
-                            'end': end_datetime,
-                            'description': f'ParentZone booking: {child_name}'
+                            'end': end_datetime
                         })
-                        
-                        print(f"    ✓ {child_name}: {start_time}-{end_time}")
                         
                     except Exception as e:
                         print(f"    ⚠️ Failed to parse booking: {e}")
                         continue
+                
+                if day_bookings:
+                    day_bookings.sort(key=lambda x: x['start'])
+                    
+                    i = 0
+                    while i < len(day_bookings):
+                        current = day_bookings[i]
+                        combined_start = current['start']
+                        combined_end = current['end']
+                        child_name = current['child_name']
+                        
+                        j = i + 1
+                        while j < len(day_bookings):
+                            next_booking = day_bookings[j]
+                            if (next_booking['child_name'] == child_name and 
+                                combined_end == next_booking['start']):
+                                combined_end = next_booking['end']
+                                j += 1
+                            else:
+                                break
+                        
+                        if USE_ACTUAL_TIMES:
+                            event_start = combined_start
+                            event_end = combined_end
+                        else:
+                            reminder_hour, reminder_minute = map(int, REMINDER_TIME.split(':'))
+                            event_start = combined_start.replace(hour=reminder_hour, minute=reminder_minute)
+                            event_end = event_start + timedelta(minutes=REMINDER_DURATION_MINUTES)
+                        
+                        if INCLUDE_TIME_IN_SUMMARY:
+                            start_hour = combined_start.hour
+                            end_hour = combined_end.hour
+                            
+                            if start_hour == 0:
+                                start_12h = "12am"
+                            elif start_hour < 12:
+                                start_12h = f"{start_hour}am"
+                            elif start_hour == 12:
+                                start_12h = "12pm"
+                            else:
+                                start_12h = f"{start_hour - 12}pm"
+                            
+                            if end_hour == 0:
+                                end_12h = "12am"
+                            elif end_hour < 12:
+                                end_12h = f"{end_hour}am"
+                            elif end_hour == 12:
+                                end_12h = "12pm"
+                            else:
+                                end_12h = f"{end_hour - 12}pm"
+                            
+                            time_str = f"{start_12h}-{end_12h}"
+                            summary = f"{child_name} {time_str}"
+                        else:
+                            summary = child_name
+                        
+                        bookings.append({
+                            'summary': summary,
+                            'start': event_start,
+                            'end': event_end,
+                            'description': f'ParentZone booking: {child_name} ({combined_start.strftime("%H:%M")}-{combined_end.strftime("%H:%M")})',
+                            'original_start': combined_start.strftime("%H:%M"),
+                            'original_end': combined_end.strftime("%H:%M")
+                        })
+                        
+                        print(f"    ✓ {summary}")
+                        i = j
                     
             except Exception as e:
-                # Day with no bookings - skip silently
                 continue
         
         print(f"  Total: {len(bookings)} booking(s) this month\n")
@@ -253,22 +302,18 @@ def extract_bookings_from_page(driver):
 def click_next_month(driver):
     """Click the next month button and wait for page to update"""
     try:
-        # Get current month/year BEFORE clicking
         month_year_element = driver.find_element(
             By.CSS_SELECTOR, 
             "h6.MuiTypography-root.MuiTypography-h6.MuiTypography-noWrap.css-1dw86cl-titleWithButtons"
         )
         old_month_year = month_year_element.text.replace('Bookings - ', '').strip()
         
-        # Find the next month button using data-test-id (most reliable)
         next_button = None
         
         try:
-            # Primary method: Use the data-test-id attribute
             next_button = driver.find_element(By.CSS_SELECTOR, 'button[data-test-id="next_btn"]')
             print(f"  Found next month button via data-test-id")
         except:
-            # Fallback: Use the full class combination
             try:
                 next_button = driver.find_element(
                     By.CSS_SELECTOR,
@@ -276,7 +321,6 @@ def click_next_month(driver):
                 )
                 print(f"  Found next month button via CSS classes")
             except:
-                # Last resort: Find button containing ChevronRightIcon
                 try:
                     chevron_icon = driver.find_element(By.CSS_SELECTOR, 'svg[data-testid="ChevronRightIcon"]')
                     next_button = chevron_icon.find_element(By.XPATH, "..")
@@ -288,10 +332,8 @@ def click_next_month(driver):
             print("⚠️ Could not find next month button")
             return False
         
-        # Click the button
         next_button.click()
         
-        # Wait for the month/year to actually change (max 5 seconds)
         wait = WebDriverWait(driver, 5)
         
         def month_changed(driver):
@@ -306,8 +348,6 @@ def click_next_month(driver):
                 return False
         
         wait.until(month_changed)
-        
-        # Small additional pause to let the day elements render
         time.sleep(1)
         
         print(f"  ➡️ Advanced to next month")
@@ -321,13 +361,11 @@ def click_next_month(driver):
 def generate_ical_per_month(all_bookings, output_folder="."):
     """Generate separate iCal files for each month"""
     
-    # Group bookings by month
     bookings_by_month = {}
     
     for booking in all_bookings:
-        # Get year and month from start datetime
-        month_key = booking['start'].strftime('%Y-%m')  # e.g., "2025-01"
-        month_name = booking['start'].strftime('%Y_%B')  # e.g., "2025_January"
+        month_key = booking['start'].strftime('%Y-%m')
+        month_name = booking['start'].strftime('%Y_%B')
         
         if month_key not in bookings_by_month:
             bookings_by_month[month_key] = {
@@ -337,7 +375,6 @@ def generate_ical_per_month(all_bookings, output_folder="."):
         
         bookings_by_month[month_key]['bookings'].append(booking)
     
-    # Generate a separate iCal file for each month
     created_files = []
     
     for month_key in sorted(bookings_by_month.keys()):
@@ -345,15 +382,19 @@ def generate_ical_per_month(all_bookings, output_folder="."):
         month_bookings = month_data['bookings']
         month_name = month_data['name']
         
-        # Remove duplicates within this month
         seen = set()
         unique_bookings = []
         
         for booking in month_bookings:
+            original_start = booking.get('original_start', booking['start'].strftime('%H:%M'))
+            original_end = booking.get('original_end', booking['end'].strftime('%H:%M'))
+            date_str = booking['start'].strftime('%Y-%m-%d')
+            
             booking_key = (
                 booking['summary'],
-                booking['start'].isoformat(),
-                booking['end'].isoformat()
+                date_str,
+                original_start,
+                original_end
             )
             
             if booking_key not in seen:
@@ -362,11 +403,9 @@ def generate_ical_per_month(all_bookings, output_folder="."):
         
         duplicates_removed = len(month_bookings) - len(unique_bookings)
         
-        # Create filename
         filename = f"parentzone_bookings_{month_name}.ics"
         filepath = os.path.join(output_folder, filename)
         
-        # Start iCal file
         ical_content = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
@@ -377,12 +416,12 @@ def generate_ical_per_month(all_bookings, output_folder="."):
             "X-WR-TIMEZONE:Europe/London",
         ]
         
-        # Add each unique booking as an event
         for idx, booking in enumerate(unique_bookings):
-            # Generate unique ID
-            uid = f"parentzone-{booking['start'].strftime('%Y%m%d%H%M%S')}-{idx}@parentzone.me"
+            original_start = booking.get('original_start', booking['start'].strftime('%H:%M'))
+            original_end = booking.get('original_end', booking['end'].strftime('%H:%M'))
+            date_str = booking['start'].strftime('%Y%m%d')
+            uid = f"parentzone-{date_str}-{original_start.replace(':', '')}-{idx}@parentzone.me"
             
-            # Format datetime for iCal
             dtstart = booking['start'].strftime('%Y%m%dT%H%M%S')
             dtend = booking['end'].strftime('%Y%m%dT%H%M%S')
             dtstamp = datetime.now().strftime('%Y%m%dT%H%M%SZ')
@@ -401,7 +440,6 @@ def generate_ical_per_month(all_bookings, output_folder="."):
         
         ical_content.append("END:VCALENDAR")
         
-        # Write to file
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('\n'.join(ical_content))
         
@@ -416,6 +454,7 @@ def generate_ical_per_month(all_bookings, output_folder="."):
     
     return created_files
 
+
 def main():
     """Main execution"""
     print("=" * 60)
@@ -423,7 +462,6 @@ def main():
     print("=" * 60)
     print()
     
-    # Validate configuration
     if PARENTZONE_USERNAME == "your_email@example.com":
         print("❌ ERROR: Please edit the script and add your credentials!")
         print("   Update PARENTZONE_USERNAME and PARENTZONE_PASSWORD")
@@ -432,29 +470,24 @@ def main():
     
     driver = None
     all_bookings = []
-    scraped_months = []  # Track which months we've scraped to avoid duplicates
+    scraped_months = []
     
     try:
-        # Setup Chrome driver
         print("🌐 Starting Chrome browser...")
         driver = setup_driver()
         
-        # Login
         if not login_to_parentzone(driver, PARENTZONE_USERNAME, PARENTZONE_PASSWORD):
             print("❌ Login failed. Please check your credentials.")
             input("\nPress Enter to exit...")
             return
         
-        # Navigate to bookings
         print("📆 Navigating to bookings page...")
         driver.get(PARENTZONE_BOOKINGS_URL)
         time.sleep(5)
         
-        # Scrape multiple months
         print(f"\n🔍 Scraping up to {MONTHS_TO_SCRAPE} month(s)...\n")
         
         for month_idx in range(MONTHS_TO_SCRAPE):
-            # Get current month name to track what we've scraped
             try:
                 month_year_element = driver.find_element(
                     By.CSS_SELECTOR,
@@ -462,7 +495,6 @@ def main():
                 )
                 current_month_year = month_year_element.text.replace('Bookings - ', '').strip()
                 
-                # Check if we've already scraped this month (means we've looped back)
                 if current_month_year in scraped_months:
                     print(f"⚠️ Already scraped {current_month_year}, stopping to avoid duplicates.")
                     break
@@ -473,17 +505,14 @@ def main():
                 print("⚠️ Could not read current month, stopping.")
                 break
             
-            # Scrape current month
             bookings = extract_bookings_from_page(driver)
             all_bookings.extend(bookings)
             
-            # Move to next month (except on last iteration)
             if month_idx < MONTHS_TO_SCRAPE - 1:
                 if not click_next_month(driver):
                     print("⚠️ Could not navigate further, stopping here.")
                     break
         
-        # Generate iCal files (one per month)
         print("\n" + "=" * 60)
         if all_bookings:
             print("📝 Generating iCal files...\n")
